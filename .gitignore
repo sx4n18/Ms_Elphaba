@@ -1,2 +1,9 @@
 example
 JC_gen_data
+Random_exp
+.DS_Store
+.idea
+__pycache__
+Enc/__pychahe__
+Quan/__pycache__
+oap_model/__pycache__
