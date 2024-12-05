@@ -10,7 +10,6 @@
 ## 2. Each row of the input data is expected to be 256 elements long.
 ## 3. Value of each element should have a range of 0-7.
 import warnings
-
 import numpy as np
 import struct
 import io
@@ -77,6 +76,23 @@ class RLE_2B:
             file.write(encoded_data)
         # report the binary file size
         print(f"Binary file size: {os.path.getsize(file_name)} bytes\n")
+
+    @staticmethod
+    def get_compression_ratio(data: np.ndarray, bits_per_pixel=3):
+        """
+        Calculate the compression ratio of the given data.
+        :param data:
+        :return: compression percentage
+        """
+        # Calculate the number of bytes required to store the original data
+        original_size = data.size*bits_per_pixel/8
+        # Encode the data using the run-length encoder
+        encoded_data = RLE_2B.encode_in_memory(data)
+        # Calculate the number of bytes required to store the encoded data
+        encoded_size = len(encoded_data)
+        # Calculate the compression ratio
+        compression_ratio = (original_size - encoded_size) / original_size * 100
+        return compression_ratio
 
     @staticmethod
     def encode_2_file_straight(data:np.ndarray, file_name: str):
@@ -181,6 +197,23 @@ class RLE_RD_2B(RLE_2B):
             file.write(encoded_data)
         # report the binary file size
         print(f"Binary file size: {os.path.getsize(file_name)} bytes\n")
+
+    @staticmethod
+    def get_compression_ratio(data: np.ndarray, bits_per_pixel=3):
+        """
+        Calculate the compression ratio of the given data.
+        :param data:
+        :return: compression percentage
+        """
+        # Calculate the number of bytes required to store the original data
+        original_size = data.size*bits_per_pixel/8
+        # Encode the data using the run-length encoder
+        encoded_data = RLE_RD_2B.encode_in_memory(data)
+        # Calculate the number of bytes required to store the encoded data
+        encoded_size = len(encoded_data)
+        # Calculate the compression ratio
+        compression_ratio = (original_size - encoded_size) / original_size * 100
+        return compression_ratio
 
     @staticmethod
     def encode_2_file_straight(data:np.ndarray, file_name: str):
@@ -327,6 +360,23 @@ class RLE_AZ_W_RM_2B(RLE_2B):
             file.write(encoded_data)
         # report the binary file size
         print(f"Binary file size: {os.path.getsize(file_name)} bytes\n")
+
+    @staticmethod
+    def get_compression_ratio(data: np.ndarray, bits_per_pixel=3):
+        """
+        Calculate the compression ratio of the given data.
+        :param data:
+        :return: compression percentage
+        """
+        # Calculate the number of bytes required to store the original data
+        original_size = data.size*bits_per_pixel/8
+        # Encode the data using the run-length encoder
+        encoded_data = RLE_AZ_W_RM_2B.encode_in_memory(data)
+        # Calculate the number of bytes required to store the encoded data
+        encoded_size = len(encoded_data)
+        # Calculate the compression ratio
+        compression_ratio = (original_size - encoded_size) / original_size * 100
+        return compression_ratio
 
     @staticmethod
     def encode_2_file_straight(data:np.ndarray, file_name: str):
