@@ -5,10 +5,13 @@
 ## 1. RLE_2B: simple 2 byte run-length encoder
 ## 2. RLE_RD_2B: by comparison, this encoder will encode the row difference data
 ## 3. RLE_AZ_W_RM_2B: this encoder will consider special cases of all zero rows and throw row marker data
+## 4. RLE_VP_num_2B: this encoder will support variable number of pixels in a row
 ## Comments:
 ## 1. All the encoders expect an input of a 2D numpy array where each row is encoded separately.
-## 2. Each row of the input data is expected to be 256 elements long.
+## 2. Each row of the input data is expected to be 256 elements long, this only applies RLE_2B and RLE_RD_2B.
 ## 3. Value of each element should have a range of 0-7.
+###########################################################################################################
+
 import warnings
 import numpy as np
 import struct
@@ -20,6 +23,8 @@ import os
 class RLE_2B:
     """
     Simple 2 byte run-length encoder.
+
+    IMPORTANT: This encoder will by default consider the input data is 256 elements wide.
 
     The encoder will encode the given data using a simple 2 byte run-length encoding scheme.
     The returned byte follows the following format:
@@ -387,5 +392,119 @@ class RLE_AZ_W_RM_2B(RLE_2B):
                       "file_name: the file name to be saved")
         pass
 
+
+
+class RLE_VP_num_2B(RLE_2B):
+    '''
+    This is a variation of the original RLE_2B encoder, this encoder will support variable number of pixels in a row.
+    The encoder expects the parameter num_pixels to instantiate this encoder.
+    '''
+    def __init__(self, num_pixels: int):
+        self.num_pixels = num_pixels
+
+    def encode_in_memory(self, data: np.ndarray) -> bytes:
+        """
+        Encode the given data using a simple 2 byte run-length encoding scheme.
+        The data is assumed to be a 2D numpy array where each row is encoded
+        separately.
+        """
+        # Create a byte stream to write the encoded data
+        with io.BytesIO() as byte_stream:
+            # Iterate over each row in the data
+            for row in data:
+                # Initialize the run length and the current value
+                run_length = 0
+                current_value = row[0]
+                # Iterate over each value in the row
+                for value in row:
+                    # If the value is the same as the current value, increment the run length
+                    if value == current_value:
+                        run_length += 1
+                        # If the run length reaches the maximum number of pixels, write the run length and the value to the byte stream
+                        if run_length == 255:
+                            byte_stream.write(struct.pack("B", run_length))
+                            byte_stream.write(struct.pack("B", current_value))
+                            run_length = 0
+                    # If the value is different, write the run length and the value to the byte stream
+                    else:
+                        byte_stream.write(struct.pack("B", run_length))
+                        byte_stream.write(struct.pack("B", current_value))
+                        # Update the current value and reset the run length
+                        current_value = value
+                        run_length = 1
+                # Write the final run length and value to the byte stream
+                byte_stream.write(struct.pack("B", run_length))
+                byte_stream.write(struct.pack("B", current_value))
+            # Return the encoded data as bytes
+            return byte_stream.getvalue()
+
+    def encode_2_file(self, data: np.ndarray, file_name: str):
+        '''
+        Encode the given data using a simple 2 byte run-length encoding scheme
+        :param data: numpy 2D array to be encoded
+        :param file_name: saved file name string
+        :return: void
+        '''
+        # Encode the data in memory
+        encoded_data = self.encode_in_memory(data)
+        # Write the encoded data to the file
+        if not os.path.exists(file_name):
+            os.makedirs(file_name)
+        with open(file_name, "wb") as file:
+            file.write(encoded_data)
+        # report the binary file size
+        print(f"Binary file size: {os.path.getsize(file_name)} bytes\n")
+
+    def get_compression_ratio(self, data: np.ndarray, bits_per_pixel=3):
+        """
+        Calculate the compression ratio of the given data.
+        :param data:
+        :return: compression percentage
+        """
+        # Calculate the number of bytes required to store the original data
+        original_size = data.size*bits_per_pixel/8
+        # Encode the data using the run-length encoder
+        encoded_data = self.encode_in_memory(data)
+        # Calculate the number of bytes required to store the encoded data
+        encoded_size = len(encoded_data)
+        # Calculate the compression ratio
+        compression_ratio = (original_size - encoded_size) / original_size * 100
+        return compression_ratio
+
+    def encode_2_file_straight(self, data:np.ndarray, file_name: str):
+        '''
+        :param data:
+        :param file_name:
+        :return:
+        '''
+        # Create a byte stream to write the encoded data
+        with open(file_name, "wb") as file:
+            # Iterate over each row in the data
+            for row in data:
+                # Initialize the run length and the current value
+                run_length = 0
+                current_value = row[0]
+                # Iterate over each value in the row
+                for value in row:
+                    # If the value is the same as the current value, increment the run length
+                    if value == current_value:
+                        run_length += 1
+                        # If the run length reaches the maximum number of pixels, write the run length and the value to the byte stream
+                        if run_length == 255:
+                            file.write(struct.pack("B", run_length))
+                            file.write(struct.pack("B", current_value))
+                            run_length = 0
+                    # If the value is different, write the run length and the value to the byte stream
+                    else:
+                        file.write(struct.pack("B", run_length))
+                        file.write(struct.pack("B", current_value))
+                        # Update the current value and reset the run length
+                        current_value = value
+                        run_length = 1
+                # Write the final run length and value to the byte stream
+                file.write(struct.pack("B", run_length))
+                file.write(struct.pack("B", current_value))
+        # report the binary file size
+        print(f"Binary file size: {os.path.getsize(file_name)} bytes\n")
 
 
