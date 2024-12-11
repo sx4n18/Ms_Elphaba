@@ -220,7 +220,7 @@ class RLE_AZ_W_RM_2B_DEC:
                     pixel_value = byte1 >> 3
                     run_length = (byte1 & 0b00000111) << 8 | byte2
                     ## Append the pixel value to the decoded data
-                    appendix = np.full((1, run_length), pixel_value, dtype=np.uint8).tolist()
+                    appendix = np.full((run_length), pixel_value, dtype=np.uint8).tolist()
                     row_element.extend(appendix)
                     ## Check if the row is full
                     if len(row_element) == self.pixel_num:

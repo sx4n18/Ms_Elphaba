@@ -310,14 +310,15 @@ class RLE_AZ_W_RM_2B(RLE_2B):
                         # Reset the all zero row run length
                         all_zero_row_run_length = 0
                 # If the row is not all zeros, check if the all zero row run length is greater than 0
-                elif all_zero_row_run_length > 0:
-                    # Write the all zero row run length data to the byte stream
-                    byte_stream.write(struct.pack("B", 0b0100_0000 | (all_zero_row_run_length >> 8)))
-                    byte_stream.write(struct.pack("B", all_zero_row_run_length & 0xFF))
-                    # Reset the all zero row run length
-                    all_zero_row_run_length = 0
-                # If the row is not all zeros, encode the row data
                 else:
+                    # if the all zero row run length is greater than 0, write the AZ run length before encoding the row data
+                    if all_zero_row_run_length > 0:
+                        # Write the all zero row run length data to the byte stream
+                        byte_stream.write(struct.pack("B", 0b0100_0000 | (all_zero_row_run_length >> 8)))
+                        byte_stream.write(struct.pack("B", all_zero_row_run_length & 0xFF))
+                        # Reset the all zero row run length
+                        all_zero_row_run_length = 0
+                    # If the row is not all zeros, encode the row data
                     # Initialize the run length and the current value
                     run_length = 0
                     current_value = row[0]
@@ -386,10 +387,10 @@ class RLE_AZ_W_RM_2B(RLE_2B):
     @staticmethod
     def encode_2_file_straight(data:np.ndarray, file_name: str):
         # This method is not going to be implemented
-        warnings.warn("This method is not going to be implemented"
-                      "Plese use the encode_2_file(data, file_name) method instead."
-                      "data: the 2d numpy array to be encoded"
-                      "file_name: the file name to be saved")
+        warnings.warn("This method is not going to be implemented\n"
+                      "Plese use the encode_2_file(data, file_name) method instead.\n"
+                      "data: the 2d numpy array to be encoded\n"
+                      "file_name: the file name to be saved\n")
         pass
 
 
