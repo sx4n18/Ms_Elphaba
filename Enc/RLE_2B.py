@@ -509,3 +509,169 @@ class RLE_VP_num_2B(RLE_2B):
         print(f"Binary file size: {os.path.getsize(file_name)} bytes\n")
 
 
+class mini_col_RLE_2B_encoder:
+    '''
+    This is the 2-byte run length encoder that operates on each column instead of the rows.
+    The max number of columns is 256, the encoder will encode the column data separately.
+    Each data packet should be 3 bytes long.
+    '''
+
+    def __init__(self, col_index, current_value, run_length = 1):
+        # limit the column index from 0 to 255
+        if col_index < 0 or col_index > 255:
+            raise ValueError("The column index should be within the range of 0-255")
+        self.col_index = col_index
+        self.current_value = current_value
+        self.run_length = run_length
+
+    def encode_on_live_data(self, data) -> bytes:
+        '''
+        Encode the given data using a simple 2 byte run-length encoding scheme.
+        The data is assumed to be a 2D numpy array where each column is encoded separately.
+        '''
+        # Create a byte stream to write the encoded data
+        with io.BytesIO() as byte_stream:
+            # if the value is the same as the current value, increment the run length
+            if data == self.current_value:
+                self.run_length += 1
+            # If the value is different, write the index, run length and the value to the byte stream
+            else:
+                byte_stream.write(struct.pack("B", self.col_index))
+                byte_stream.write(struct.pack("B", 0b0000_0000 | ((self.current_value << 4) | (self.run_length >> 8))))
+                byte_stream.write(struct.pack("B", self.run_length & 0xFF))
+                # Update the current value and reset the run length
+                self.current_value = data
+                self.run_length = 1
+            # Return the encoded data as bytes
+            return byte_stream.getvalue()
+
+    def encode_on_a_whole_column(self, data: np.ndarray) -> bytes:
+        '''
+        Encode the given column of data using a simple 2 byte run-length encoding scheme.
+        :param data:
+        :return:
+        '''
+        row_mark_data = 0
+        # Create a byte stream to write the encoded data
+        with io.BytesIO() as byte_stream:
+            # check if the first element is the same as the initialised value, if not, report the warning and reset the current value
+            if data[0] != self.current_value:
+                warnings.warn("The first element is different from the initialised current value, resetting the current value...\n")
+                self.current_value = data[0]
+            # Iterate over each value in the column
+            for number, value in enumerate(data):
+                if number == 0:
+                    continue
+                # if the number marks the 2**12 column, write the row marker data to the byte stream
+                if (number+1) % 2**12 == 0:
+                    byte_stream.write(struct.pack("B", self.col_index))
+                    byte_stream.write(struct.pack("B", 0b1000_0000 | (row_mark_data >> 8)))
+                    byte_stream.write(struct.pack("B", row_mark_data & 0xFF))
+                    row_mark_data += 1
+                # if the value is the same as the current value, increment the run length
+                if value == self.current_value:
+                    self.run_length += 1
+                # If the value is different, write the index, run length and the value to the byte stream
+                else:
+                    byte_stream.write(struct.pack("B", self.col_index))
+                    byte_stream.write(struct.pack("B", 0b0000_0000 | ((self.current_value << 4) | (self.run_length >> 8)))
+                                      )
+                    byte_stream.write(struct.pack("B", self.run_length & 0xFF))
+                    # Update the current value and reset the run length
+                    self.current_value = value
+                    self.run_length = 1
+            # Write the final run length and value to the byte stream
+            byte_stream.write(struct.pack("B", self.col_index))
+            byte_stream.write(struct.pack("B", 0b0000_0000 | ((self.current_value << 4) | (self.run_length >> 8))))
+            byte_stream.write(struct.pack("B", self.run_length & 0xFF))
+            # Return the encoded data as bytes
+            return byte_stream.getvalue()
+
+
+
+
+
+
+
+class RLE_Col_2B:
+    '''
+    This is a 2-byte run length encoder that operates on each column instead of the rows.
+    This shall operate similarly to the RLE_2B encoder, there are 2 cases to consider:
+    1. Normal run length data:
+    [cccc cccc] column index
+    [0vvv rrrr] [rrrr rrrr]
+    where: the first byte start with 0, followed by 3 bits of value and 12 bits of run length, the 12 bits run length's LS 8bit
+    is stored in the second byte, and the MS 4 bits are stored in the first byte.
+    2. Row marker data:
+    [cccc cccc] column index
+    [1iii iiii] [iiii iiii]
+    where: the first byte start with 1, followed by 15 bits of row marker data, the 15 bits row marker data's LS 8bit is stored in the
+    second byte, and the MS 7 bits are stored in the first byte.
+    This row marker will be sent out every 2^12 columns, before sending over the row marker, the encoder will send out the normal run
+    '''
+
+    def __init__(self, num_columns: int, num_sub_channels: int = 1):
+        self.num_pixels = num_columns
+        self.encoders = []
+        self.num_sub_channels = num_sub_channels
+
+
+    def init_encoders(self, data):
+        '''
+        Initialise the encoders for each column
+        :param data: the whole data array, or just the first row of the data
+        '''
+        if data.ndim == 1:
+            data = np.expand_dims(data, axis=0)
+        if self.num_pixels > 256:
+            warnings.warn("The number of columns is greater than 256, the image will be broken into sub-channels\n")
+            self.num_sub_channels = self.num_pixels // 256
+            for i in range(self.num_sub_channels):
+                sub_chan_encoders = []
+                for j in range(256):
+                    try:
+                        sub_chan_encoders.append(mini_col_RLE_2B_encoder(j, data[0][i*256+j]))
+                    except IndexError:
+                        print(f"Sub-channel {i} has less than 256 columns\n")
+                        break
+                self.encoders.append(sub_chan_encoders)
+            print(f"There are in total {self.num_sub_channels} sub-channels.\n")
+        else:
+            for i in range(self.num_pixels):
+                self.encoders.append(mini_col_RLE_2B_encoder(i, data[0][i]))
+
+    def encode(self, data: np.ndarray, file_path: str):
+        '''
+        Encode the given data using a simple 2 byte run-length encoding scheme.
+        The data is assumed to be a 2D numpy array where each column is encoded separately.
+        '''
+        # make sure the file path is valid
+        if not os.path.exists(file_path):
+            os.makedirs(file_path)
+        file_size = 0
+        # if there is more than one sub-channel, encode the data separately
+        if self.num_sub_channels > 1 :
+            for sub_chan_index in range(self.num_sub_channels):
+                bin_file = open(file_path + f"/sub_chan_{sub_chan_index}.bin", "wb")
+                for i in range(256):
+                    try:
+                        encoded_data = self.encoders[sub_chan_index][i].encode_on_a_whole_column(data[:, sub_chan_index*256+i])
+                    except IndexError:
+                        print("Last sub-channel has less than 256 pixels\n")
+                        break
+                    file_size += len(encoded_data)
+                    bin_file.write(encoded_data)
+                bin_file.close()
+        else:
+            bin_file = open(file_path + "/the_only_chan.bin", "wb")
+            for i in range(self.num_pixels):
+                encoded_data = self.encoders[i].encode_on_a_whole_column(data[:, i])
+                file_size += len(encoded_data)
+                bin_file.write(encoded_data)
+            bin_file.close()
+
+        print(f"Binary file size: {file_size} bytes\n")
+
+
+
+
