@@ -163,3 +163,140 @@ class Row_encoder_5P:
         compression_ratio = (1 - (encoded_size / original_size)) * 100
 
         return compression_ratio
+
+
+class Row_encoder_10P:
+    '''
+    Just like the Row_encoder_5P, but this will encode the data slightly differently.
+
+    Since this encoder will take 10 pixels, the output of this encoder will be 32 bits instead of 16.
+
+    Similarly, there are 3 types of data:
+    1. Raw data, this is a 32-bit number in bytes that starts with a leading 00
+        00_data_data_data_data_data_data_data_data_data_data ---> each data is 3 bit, 10 data and a leading 00 will make it 32 bits
+    2. The timestamp data, this is a 32-bit number in bytes that starts with a leading 01
+        01_Time_stamp ---> 1 is the leading bit, rest 30 bits are the timestamp data
+    3. The alarm data, this is a special packet that will be sent when the global timer loops around, this will
+    be sent every 2^30 ticks.
+        1000_0000_0000_0000_0000_0000_0000_0000 ---> this is a special packet that will be sent when the global timer loops around
+    '''
+
+    def __init__(self):
+        self._repeating_pattern = 0
+        self._tok_record = 0
+
+    def encode_in_mem(self, data: np.ndarray) -> bytes:
+        '''
+        This function will encode the data assuming that the data is sent along with the increment of the timestamp.
+        i.e. the time stamp is incremented by 1 for each data sent.
+
+        Args:
+            data: This should be a 2D numpy array of shape (M, 10), where M is the number of rows and 10 is the number of columns.
+
+        Returns:
+            encoded_data: This will be a bytes object that contains the encoded data.
+        '''
+
+        # Check if the data is in the correct format
+        if data.shape[1] != 10:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 10), where M is the number of rows and 10 is the number of columns.")
+
+        #Start encoding the data
+        encoded_data = bytearray()
+        loops = data.shape[0]
+        with io.BytesIO() as byte_stream:
+            for loop in range(loops):
+                if loop == 0:
+                    # This is the first loop, the data will be exported as it is and saved as the repeating pattern
+                    self._repeating_pattern = data[loop]
+                    data_to_write = self.one_by_10_nd_array_to_number(data[loop])
+                    byte_stream.write(struct.pack('I', data_to_write))
+                elif (loop+1)% 2^30 == 0:
+                    # This is the alarm data, this will be sent when the global timer loops around
+                    byte_stream.write(struct.pack('I', 0x80000000))
+                else:
+                    # This is the normal data, the data will be exported as it is
+                    # Check if the data matches the repeating pattern
+                    if np.array_equal(data[loop], self._repeating_pattern):
+                        # The data matches the repeating pattern, do not export anything
+                        pass
+                    else:
+                        # The data does not match the repeating pattern, export the timestamp and the data
+                        self._tok_record = loop
+                        # Export the timestamp
+                        byte_stream.write(struct.pack('I', (self._tok_record) | 0x80000000))
+                        # Export the data
+                        data_to_write = self.one_by_10_nd_array_to_number(data[loop])
+                        byte_stream.write(struct.pack('I', data_to_write))
+
+            # Get the encoded data from the byte stream
+            encoded_data = byte_stream.getvalue()
+        return encoded_data
+    def one_by_10_nd_array_to_number(self, data: np.ndarray) -> int:
+        '''
+        This function will convert a 1x10 numpy array to a 32-bit number.
+        The first 2 bits are the leading bits, the rest 30 bits are the data.
+        Args:
+            data:
+
+        Returns:
+
+        '''
+        # Check if the data is in the correct format
+        if data.shape[0] != 10:
+            raise ValueError("The data should be a 1D numpy array of shape (10,)")
+        # Convert the data to a number
+        number = 0
+        for i in range(10):
+            number |= (data[i] << (3 * i))
+        return number
+
+    def encode(self, data:np.ndarray, file_name="encoded_data.bin"):
+        '''
+        This function will encode the data and write it to a byte file.
+        Args:
+            data:
+                This should be a 2D numpy array of shape (M, 10), where M is the number of rows and 10 is the number of columns.
+
+            file_name:
+                This is the name of the file where the encoded data will be written to.
+                The default value is "encoded_data.bin".
+
+        Returns:
+            None
+
+        '''
+
+        # Check if the data is in the correct format
+        if data.shape[1] != 10:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 10), where M is the number of rows and 10 is the number of columns.")
+        # Start encoding the data
+        encoded_data = self.encode_in_mem(data)
+        # Write the encoded data to a file
+
+        with open(file_name, 'wb') as f:
+            f.write(encoded_data)
+        print(f"Encoded data written to {file_name}")
+
+    def compression_ratio(self, data):
+        '''
+        This function will calculate the compression ratio of the encoded data.
+        The compression ratio is defined as the size of the original data divided by the size of the encoded data.
+        Args:
+            data:
+
+        Returns:
+
+        '''
+        # Check if the data is in the correct format
+        if data.shape[1] != 10:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 10), where M is the number of rows and 10 is the number of columns.")
+        # The original size needs to be calculated as the multiplication of number of the elements by 3 bit
+        original_size = data.size * 3 / 8
+        # Calculate the size of the encoded data
+        encoded_data = self.encode_in_mem(data)
+        encoded_size = len(encoded_data)
+        # Calculate the compression ratio
+        compression_ratio = (1 - (encoded_size / original_size)) * 100
+        return compression_ratio
+
