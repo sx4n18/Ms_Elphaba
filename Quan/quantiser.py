@@ -74,6 +74,8 @@ class Quantiser_3B_INV:
         Quantise the pixel values to 3-bits.
         '''
         quantised_pixel_values = np.zeros_like(pixel_values, dtype=np.uint8)
+        # limit the pixel values within the range of [0, 1]
+        pixel_values = np.clip(pixel_values, 0, 1)
         reversed_pixel_values = 1 - pixel_values
         for i in range(len(self.thresholds)):
             quantised_pixel_values[reversed_pixel_values > self.thresholds[i]] = i+1
@@ -101,6 +103,8 @@ class Quantiser_3B_uniform_dist_INV:
         Quantise the pixel values to 3-bits.
         '''
         quantised_pixel_values = np.zeros_like(pixel_values, dtype=np.uint8)
+        # limit the pixel values within the range of [0, 1]
+        pixel_values = np.clip(pixel_values, 0, 1)
         reversed_pixel_values = 1 - pixel_values
         for i in range(len(self.thresholds)):
             quantised_pixel_values[reversed_pixel_values > self.thresholds[i]] = i+1
