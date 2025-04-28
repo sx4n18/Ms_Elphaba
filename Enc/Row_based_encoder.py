@@ -73,13 +73,20 @@ class Row_encoder_5P:
                         # The data matches the repeating pattern, do not export anything
                         pass
                     else:
-                        # The data does not match the repeating pattern, export the timestamp and the data
+                        if self._tok_record != loop - 1:
+                            # The data does not match saved pattern and it has been more than 1 loop since the last update
+                            self._tok_record = loop
+                            # Export the timestamp
+                            byte_stream.write(struct.pack('H', (self._tok_record) | 0x8000))
+
+                        # The data does not match the repeating pattern, dump the raw data
                         self._tok_record = loop
-                        # Export the timestamp
-                        byte_stream.write(struct.pack('H', (self._tok_record) | 0x8000))
+
                         # Export the data
                         data_to_write = self.one_by_5_nd_array_to_number(data[loop])
                         byte_stream.write(struct.pack('H', data_to_write))
+                        # update the repeating pattern
+                        self._repeating_pattern = data[loop]
 
             # Get the encoded data from the byte stream
             encoded_data = byte_stream.getvalue()
@@ -164,6 +171,15 @@ class Row_encoder_5P:
 
         return compression_ratio
 
+    def reset(self):
+        '''
+        This function will reset the encoder to its initial state.
+        This will reset the repeating pattern and the tok record to 0.
+        Returns:
+            None
+        '''
+        self._repeating_pattern = 0
+        self._tok_record = 0
 
 class Row_encoder_10P:
     '''
@@ -221,13 +237,17 @@ class Row_encoder_10P:
                         # The data matches the repeating pattern, do not export anything
                         pass
                     else:
+                        if self._tok_record != loop - 1:
+                            # The data does not match saved pattern and it has been more than 1 loop since the last update
+                            self._tok_record = loop
+                            # Export the timestamp
+                            byte_stream.write(struct.pack('I', (self._tok_record) | 0x80000000))
                         # The data does not match the repeating pattern, export the timestamp and the data
                         self._tok_record = loop
-                        # Export the timestamp
-                        byte_stream.write(struct.pack('I', (self._tok_record) | 0x80000000))
                         # Export the data
                         data_to_write = self.one_by_10_nd_array_to_number(data[loop])
                         byte_stream.write(struct.pack('I', data_to_write))
+                        self._repeating_pattern = data[loop]
 
             # Get the encoded data from the byte stream
             encoded_data = byte_stream.getvalue()
@@ -300,3 +320,12 @@ class Row_encoder_10P:
         compression_ratio = (1 - (encoded_size / original_size)) * 100
         return compression_ratio
 
+    def reset(self):
+        '''
+        This function will reset the encoder to its initial state.
+        This will reset the repeating pattern and the tok record to 0.
+        Returns:
+            None
+        '''
+        self._repeating_pattern = 0
+        self._tok_record = 0
