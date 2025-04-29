@@ -1,3 +1,7 @@
+
+
+## This is a class header file for entropy related coding algorithms.
+
 class LZ77:
     def __init__(self, search_buffer_size=20, lookahead_buffer_size=15):
         self.search_buffer_size = search_buffer_size
@@ -56,14 +60,18 @@ class LZ77:
         return ''.join(decompressed)
 
 
-# Example Usage
-lz77 = LZ77(search_buffer_size=10, lookahead_buffer_size=5)
+class rAsymmetric_Numeral_System:
 
-data = "ABABCABAB"
-print("Original Data:", data)
 
-compressed = lz77.compress(data)
-print("Compressed:", compressed)
+if __name__ == "__main__":
+    # Example usage
+    lz77 = LZ77(search_buffer_size=20, lookahead_buffer_size=15)
 
-decompressed = lz77.decompress(compressed)
-print("Decompressed:", decompressed)
+    data = "ABABABABA"
+    print("Original Data:", data)
+
+    compressed = lz77.compress(data)
+    print("Compressed:", compressed)
+
+    decompressed = lz77.decompress(compressed)
+    print("Decompressed:", decompressed)
