@@ -1,3 +1,4 @@
+import numpy as np
 
 
 ## This is a class header file for entropy related coding algorithms.
@@ -136,6 +137,117 @@ class rAsymmetric_Numeral_System:
             message += symbol
         return message, state
 
+class rANS_simple:
+
+    def __init__(self, frequency: list | np.ndarray):
+        if isinstance(frequency, np.ndarray):
+            self.freq = [int(i) for i in frequency]
+        else:
+            self.freq = frequency
+        self.M = int(np.sum(frequency))
+        self.acumulate = [int(x) for x in np.concatenate(([0], np.cumsum(frequency)[0:self.M-1])).tolist()]
+        self.symbols = np.arange(len(frequency)).tolist()
+        self.init_state = int(self.M)
+
+    def Cr(self, state: int, symbol: int):
+        """ Return the `state + 1`th number labeled `symbol`'s index """
+        new_state = (state // self.freq[symbol]) * self.M + self.acumulate[symbol] + state % self.freq[symbol]
+        return new_state
+
+    def Dx(self, state: int):
+        """ Return the symbol and the number of symbols less than `state` """
+        symbol = np.searchsorted(self.acumulate, state % self.M)
+        count = state // self.M * self.freq[symbol] + state % self.freq[symbol]
+        return symbol, count
+
+    def encode(self, message: list | str):
+        state = self.init_state
+        for symbol in message[::-1]:
+            state = self.Cr(state, symbol)
+        return state
+
+    def decode(self, state: int):
+        message = []
+        while state > self.init_state:
+            symbol, state = self.Dx(state)
+            message.append(symbol)
+        return message[::-1], state
+
+
+class StreamANS:
+    def __init__(self, labeling: str | list):
+        self.labeling = labeling
+        self.block_size = len(labeling)
+
+        self.count_per_block = {}
+        self.count_before_index = []
+        self.symbol_table = {}
+        for i, c in enumerate(labeling):
+            if c not in self.symbol_table:
+                self.count_per_block[c] = 0
+                self.symbol_table[c] = []
+            self.count_before_index.append(self.count_per_block[c])
+            self.count_per_block[c] += 1
+            self.symbol_table[c].append(i)
+
+    def Cr(self, state: int, symbol: str):
+        """Returns the `state + 1`th number labeled `symbol`"""
+
+        full_blocks = (state + 1) // self.count_per_block[symbol]
+        symbols_left = (state + 1) % self.count_per_block[symbol]
+        if symbols_left == 0:
+            full_blocks -= 1
+            symbols_left = self.count_per_block[symbol]
+
+        # Count `symbols_left` symbols within the block
+        index_within_block = self.symbol_table[symbol][symbols_left - 1]
+
+        return full_blocks * self.block_size + index_within_block
+
+    def Dx(self, state: int):
+        """Counts the number of numbers labeled `symbol` that are less than `state`"""
+
+        # because of renormalization, `state` is guaranteed to be in [block_size, 2 * block_size - 1]
+        index_within_block = state - self.block_size
+        symbol = self.labeling[index_within_block]
+
+        return symbol, self.count_per_block[symbol] + self.count_before_index[index_within_block]
+
+    def encode(self, message: str | list, initial_state: int = 0):
+        bitstream = 1
+        state = [i for i in range(self.block_size) if self.Cr(i, message[-1]) >= self.block_size][
+            initial_state]  # the `initial_state`th number X such that `block_size <= C(X) < 2 * block_size`
+
+        for symbol in message[::-1]:
+
+            # shrink `X` until `C(X) < 2N`
+            predicted = self.Cr(state, symbol)
+            normalized_state = state
+            while predicted >= 2 * self.block_size:
+                bitstream <<= 1
+                bitstream |= normalized_state & 1
+                normalized_state >>= 1
+                predicted = self.Cr(normalized_state, symbol)
+
+            state = predicted
+
+        return state, bitstream
+
+    def decode(self, state: int, bitstream):
+        message = ""
+
+        while True:
+            symbol, state = self.Dx(state)
+            message += symbol
+
+            # expand `X` until `X >= N` or we run out of bits
+            while state < self.block_size and bitstream > 1:
+                state <<= 1
+                state |= bitstream & 1
+                bitstream >>= 1
+            if state < self.block_size: break
+
+        return message, state
 
 
 if __name__ == "__main__":
