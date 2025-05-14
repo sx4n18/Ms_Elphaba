@@ -155,7 +155,7 @@ class PSD(ABC):
         # ax.set_xscale('log')
         # ax.set_yscale('log')
         ax.set_xlabel('Diameter (m)')
-        ax.set_ylabel('PSD ($\mathrm{m}^{-3}\,\mathrm{m}^{-1}$)')
+        ax.set_ylabel(r'PSD ($\mathrm{m}^{-3}\,\mathrm{m}^{-1}$)')
         return handle
     
     def adjusted_bins(self, retrieval):
@@ -295,16 +295,16 @@ class GammaPSD(PSD):
         return cls.from_litres_cm(intercept, np.exp(ln_slope), shape)
 
     def parameter_description(self) -> str:
-        return f"$N_0={self.intercept:.2e}$, $\lambda={self.slope:.2e}$, $\mu={self.shape:.2f}$"
+        return f"$N_0={self.intercept:.2e}$, $\\lambda={self.slope:.2e}$, $\\mu={self.shape:.2f}$"
 
     @classmethod
     def from_concentration(cls, number_concentration, slope, shape, **kwargs):
         """Calculate the number density per field.
 
         Args:
-            number_concentration (float): The number concentration in :math:`\mathrm{m^{-3}}`.
-            slope (float): :math:`\Lambda` in :math:`\mathrm{m^{-1}}`.
-            shape (float): :math:`\mu`.
+            number_concentration (float): The number concentration in :math:`\\mathrm{m^{-3}}`.
+            slope (float): :math:`\\Lambda` in :math:`\\mathrm{m^{-1}}`.
+            shape (float): :math:`\\mu`.
 
         Returns:
             float: The number density per field.
@@ -318,9 +318,9 @@ class GammaPSD(PSD):
 
         Args:
             d (ArrayLike): The diameters in metres.
-            intercept (float): :math:`N_0` in :math:`\mathrm{m^{-4}}`.
-            slope (float): :math:`\Lambda` in :math:`\mathrm{m^{-1}}`.
-            shape (float): :math:`\mu`.
+            intercept (float): :math:`N_0` in :math:`\\mathrm{m^{-4}}`.
+            slope (float): :math:`\\Lambda` in :math:`\\mathrm{m^{-1}}`.
+            shape (float): :math:`\\mu`.
 
         Returns:
             callable: The gamma distribution probability distribution function.
@@ -433,7 +433,7 @@ class SamplingModel: # NOTE: Not really used anymore; deprecated in favour of Cl
     along the inlet.
 
     Args:
-        psd (PSD): The particle size distribution function, dN/dr in :math:`\mathrm{m^{-3}}`.
+        psd (PSD): The particle size distribution function, dN/dr in :math:`\\mathrm{m^{-3}}`.
         z_dist (callable, optional, unimplimented): The probability 
             distribution of particles along the z-axis, normalised to 1 when 
             integrated wrt z, in m^-1. Defaults to uniform across array.

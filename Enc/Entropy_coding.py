@@ -175,6 +175,9 @@ class rANS_simple:
 
 
 class StreamANS:
+    '''
+    The streaming ANS encoder that will encode the input into a predicted state and then comparing the predicted state with the current state.
+    '''
     def __init__(self, labeling: str | list):
         self.labeling = labeling
         self.block_size = len(labeling)
@@ -248,6 +251,36 @@ class StreamANS:
             if state < self.block_size: break
 
         return message, state
+
+class Simple_streamANS(rANS_simple):
+    '''
+    This is a simple streaming version of tht rANS that checks if the state in the range BEFORE encoding.
+    if the state is in the range, it will encode the state and symbol.
+    if the state is not in the range, it will renormalise the state by right shifting the state and save the bits that needs to be shifted,
+    then encode the renormed_state and symbol.
+    '''
+    def __init__(self, frequency: list | np.ndarray):
+        super().__init__(frequency)
+        self.state = self.init_state
+        self.individual_interval = {
+            i: range(self.freq[i], 2 * self.freq[i]) for i in range(len(self.freq))
+        }
+
+    def Cr(self, state: int, symbol: int):
+        # check if the state is in the range of the symbol
+        if state in self.individual_interval[symbol]:
+            stream_encoded_state = super().Cr(state, symbol)
+            bit_stream = None
+        else:
+            # renormalise the state by right shifting the state and save the bits that needs to be shifted
+            bits_needed_shifting = 0
+            while (state >> bits_needed_shifting) not in self.individual_interval[symbol]:
+                bits_needed_shifting += 1
+            print(f"bits needed shifting for {state}: ", bits_needed_shifting)
+            stream_encoded_state = super().Cr(state >> bits_needed_shifting, symbol)
+            bit_stream = (state & ((1 << bits_needed_shifting) - 1))| (1 << bits_needed_shifting)
+
+        return stream_encoded_state, bit_stream
 
 
 if __name__ == "__main__":
