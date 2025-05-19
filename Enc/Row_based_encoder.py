@@ -117,6 +117,79 @@ class Row_encoder_5P:
 
         return number
 
+    def track_encoding_rate(self, data: np.ndarray, np_or_lst: bool = False):
+        '''
+        This is a new function that will track the encoding output data rate.
+        Args:
+            data:
+                This should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.
+            np_or_lst:
+                This is a boolean value that will determine if the output is in numpy array or list format.
+                The default value is False, which means the output will be in list format.
+
+        Returns:
+            a list of the accumulating data size.
+        '''
+
+        # Check if the data is in the correct format
+        if data.shape[1] != 5:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.")
+
+        if np_or_lst:
+            # If the output is in numpy array format
+            data_size = np.zeros(data.shape[0])
+        else:
+            # If the output is in list format
+            data_size = []
+
+        # Start encoding the data
+        loops = data.shape[0]
+        with io.BytesIO() as byte_stream:
+            for loop in range(loops):
+                if loop == 0:
+                    # This is the first loop, the data will be exported as it is and saved as the repeating pattern
+                    self._repeating_pattern = data[loop]
+                    data_to_write = self.one_by_5_nd_array_to_number(data[loop])
+                    byte_stream.write(struct.pack('H', data_to_write))
+                elif (loop+1)% 2^15 == 0:
+                    # This is the alarm data, this will be sent when the global timer loops around
+                    byte_stream.write(struct.pack('H', 0x8000))
+                else:
+                    # This is the normal data, the data will be exported as it is
+                    # Check if the data matches the repeating pattern
+                    if np.array_equal(data[loop], self._repeating_pattern):
+                        # The data matches the repeating pattern, do not export anything
+                        pass
+                    else:
+                        if self._tok_record != loop - 1:
+                            # The data does not match saved pattern and it has been more than 1 loop since the last update
+                            self._tok_record = loop
+                            # Export the timestamp
+                            byte_stream.write(struct.pack('H', (self._tok_record) | 0x8000))
+
+                        # The data does not match the repeating pattern, dump the raw data
+                        self._tok_record = loop
+
+                        # Export the data
+                        data_to_write = self.one_by_5_nd_array_to_number(data[loop])
+                        byte_stream.write(struct.pack('H', data_to_write))
+                        # update the repeating pattern
+                        self._repeating_pattern = data[loop]
+
+                # Get the encoded data from the byte stream
+                encoded_data = byte_stream.getvalue()
+                # Calculate the size of the encoded data
+                encoded_size = len(encoded_data)
+                # Append the size to the data_size list
+                if np_or_lst:
+                    data_size[loop] = encoded_size
+                else:
+                    data_size.append(encoded_size)
+        return data_size
+
+
+
+
     def encode(self, data:np.ndarray, file_name="encoded_data.bin"):
         '''
         This function will encode the data and write it to a byte file.
