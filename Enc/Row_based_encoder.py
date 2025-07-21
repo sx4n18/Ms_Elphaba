@@ -32,9 +32,11 @@ class Row_encoder_5P:
         1000_0000_0000_0000 ---> this is a special packet that will be sent when the global timer loops around
     '''
 
-    def __init__(self):
+    def __init__(self, id=None):
         self._repeating_pattern = 0
-        self._tok_record = 0
+        self._tok_record = 0 # Recorded timestamp with the same pattern
+        self._re_Pete = False
+        self.id = id  # Optional ID for the encoder instance, can be used for identification
 
 
     def encode_in_mem(self, data: np.ndarray) -> bytes:
@@ -63,7 +65,7 @@ class Row_encoder_5P:
                     self._repeating_pattern = data[loop]
                     data_to_write = self.one_by_5_nd_array_to_number(data[loop])
                     byte_stream.write(struct.pack('H', data_to_write))
-                elif (loop+1)% 2^15 == 0:
+                elif (loop+1)% 2**15 == 0:
                     # This is the alarm data, this will be sent when the global timer loops around
                     byte_stream.write(struct.pack('H', 0x8000))
                 else:
@@ -244,6 +246,100 @@ class Row_encoder_5P:
 
         return compression_ratio
 
+    def encode_live(self, clock, data: np.ndarray):
+        '''
+        This method will encode the data live, this will be used to encode the data live from the image.
+        It will expect a one line data array of 5 pixels, and it will encode the data in the same way as the encode_in_mem method.
+
+        Args:
+            clock: This is the global clock that will be used to track the time.
+
+
+        Returns:
+            encoded_data: This is the encoded data, which can be:
+            a 16-bit integer --> non repeating data,
+            a timestamp and data tuple --> (timestamp, data) if the repeating pattern is broken or data does not match the recorded pattern at clock rollover
+            or None if the data matches the repeating pattern.
+
+        '''
+
+
+        ## Check if the data is in the correct format
+        if data.shape[0] != 5:
+            raise ValueError("The data should be a 1D numpy array of shape (5,)")
+
+        # Start encoding the data
+        # First data will be exported as it is and saved as the repeating pattern
+        if clock == 0:
+            # This is the first loop, the repeating pattern should be 0.
+            if type(self._repeating_pattern) is int and self._repeating_pattern != 0:
+                # First loop, but the repeating pattern is not 0, the encoder is not reset.
+                raise ValueError("The repeating pattern is not 0, did you forget to reset the encoder?")
+            else:
+                # This is the first loop, the data will be exported as it is and saved as the repeating pattern
+                self._repeating_pattern = data
+                data_to_write = self.one_by_5_nd_array_to_number(data)
+                encoded_data = data_to_write
+                return encoded_data
+
+        elif (clock+1) %(2**15) == 0:
+            # This is the alarm data, this will be sent when the global timer loops around
+            # Export the alarm data
+            alarm_data = 0x8000
+            # check if data is repeating after the alarm
+            if np.array_equal(data, self._repeating_pattern):
+                # The data matches the repeating pattern, only export the alarm data
+                encoded_data = alarm_data
+                self._re_Pete = True
+                return encoded_data
+            else:
+                # The data does not match the repeating pattern,
+                data_to_write = self.one_by_5_nd_array_to_number(data)
+                # Export the alarm data and the data
+                encoded_data = (alarm_data, data_to_write)
+                # update the repeating pattern
+                self._repeating_pattern = data
+                self._re_Pete = False
+                self._tok_record = clock
+                return encoded_data
+
+        else:
+            # This is not the first loop, the encoder will check if the data matches the repeating pattern
+            if np.array_equal(data, self._repeating_pattern):
+                # The data matches the repeating pattern, do not export anything
+                self._re_Pete = True
+                return None
+            else:
+                self._re_Pete = False
+                # The data does not match the repeating pattern, export the timestamp and the data
+                if self._tok_record != clock - 1:
+                    # Last recorded timestamp is not the same as the current clock --> pattern has been broken
+                    self._tok_record = clock
+                    # Export the timestamp
+                    timestamp_broken = (self._tok_record | 0x8000)
+                    # Export the data
+                    data_to_write = self.one_by_5_nd_array_to_number(data)
+                    encoded_data = (timestamp_broken, data_to_write)
+                    # update the repeating pattern
+                    self._repeating_pattern = data
+
+                    return encoded_data
+                else:
+                    # The data does not match the repeating pattern, but the timestamp is incremental by 1 --> consecutive non-repeating data
+                    # This means that the data is not repeating, so we will export the data as it is.
+                    data_to_write = self.one_by_5_nd_array_to_number(data)
+                    encoded_data = data_to_write
+                    # update the repeating pattern
+                    self._repeating_pattern = data
+                    # increment the tok record
+                    self._tok_record += 1
+
+                    return encoded_data
+
+
+
+
+
     def reset(self):
         '''
         This function will reset the encoder to its initial state.
@@ -253,6 +349,7 @@ class Row_encoder_5P:
         '''
         self._repeating_pattern = 0
         self._tok_record = 0
+        self._re_Pete = False
 
 class Row_encoder_10P:
     '''
