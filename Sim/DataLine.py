@@ -1,6 +1,8 @@
+import warnings
+
 from Enc.Row_based_encoder import Row_encoder_5P
 import numpy as np
-
+import math
 
 
 class fifo :
@@ -233,6 +235,42 @@ class ArbiterUrgency(arbiter):
             self.age[sel_channel.id] = 0
             self.channel_select.append(sel_channel.id)
 
+class RoundRobinSkipEmpty(arbiter):
+    '''
+    This is a round-robin arbiter that skips empty FIFOs when selecting channels to pop from.
+    '''
+
+    def select_channel(self):
+        '''
+        Choose the next non-empty channel in a round-robin fashion.
+        Returns:
+            The selected channel to pop data from.
+
+        '''
+        for _ in range(self.num_of_channels):
+            self.last_served = (self.last_served + 1) % self.num_of_channels
+            sel_channel = self.channels[self.last_served]
+            if not sel_channel.fifo.is_empty():
+                return sel_channel
+
+        # If all channels are empty, return None
+        return None
+
+    def step(self, time_step:int):
+        """
+        This function will pop the data from the FIFO buffer of the selected channel at the reading speed.
+        It will also track the buffer space available in each channel.
+        If all FIFO buffers are empty, it will skip the pop operation.
+        """
+        sel_channel = self.select_channel()
+
+        if sel_channel is not None:
+            sel_channel.fifo.pop()
+            self.channel_select.append(sel_channel.id)
+        else:
+            print(f"Time: @{time_step} *** All FIFOs are empty, skipping pop operation")
+
+
 class DataLine:
     '''
     This is the DataLine class that encapsulates the whole data line simulation.`
@@ -291,6 +329,146 @@ class DataLine:
         buffer_space_track = self.get_buffer_space_track()
         used_up_space = self.channels[0].fifo.data_depth - buffer_space_track
         return used_up_space
+
+
+class AsyncDataline:
+    '''
+    This is the true asynchronous data line class that would support the different writing and reading clock domains.
+    By default, it will assume the writing clock is 20 MHz and the reading clock is 37.5 MHz.
+
+    This is achieved by having a common tick counter that enables the writing and reading operations based on the respective clock frequencies.
+    e.g.
+    writing clock = 20 MHz, reading clock = 37.5 MHz, the least common multiple for their periods is 0.4 us.
+    i.e. for every 8 cycles of writing operations, there will be 15 cycles of reading operations.
+    So we could count the common tick counter and enable the writing operation every 15 ticks and the reading operation every 8 ticks.
+
+
+    '''
+
+    def __init__(self, num_of_channels=8, fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip_empty"):
+        '''
+        This is the constructor for the AsyncDataline class.
+        Args:
+            num_of_channels: Simply the number of channels in the data line. By default, it is 8
+            fifo_depth: FIFO depth for each channel
+            fifo_width: The word length for each FIFO entry
+            DL_id: Simply the ID for the data line, useful when there are multiple data lines in the simulation
+            wr_freq: The writing frequency in MHz, the smallest resolution is 0.1 MHz
+            rd_freq: The reading frequency in MHz the smallest resolution is 0.1 MHz
+            arbiter_name: the type of arbiter to use, by default it is "round_robin_skip", available options are "round_robin" and "urgency"
+        '''
+        self.channels = [channel(chan_id=i, fifo_depth=fifo_depth, fifo_width=fifo_width) for i in range(num_of_channels)]
+        self.num_of_channels = num_of_channels
+        if arbiter_name == "round_robin":
+            self.arbiter = arbiter(self.channels)
+        elif arbiter_name == "urgency":
+            self.arbiter = ArbiterUrgency(self.channels)
+        elif arbiter_name == "round_robin_skip":
+            self.arbiter = RoundRobinSkipEmpty(self.channels)
+        else:
+            raise Exception("Arbiter not supported yet")
+
+        ## ID for the data line
+        self.DL_id = DL_id
+
+        ## Calculate the least common multiple for the writing and reading clock frequencies
+        self.LCM_freq = int(wr_freq*rd_freq*100) // math.gcd(int(wr_freq*10), int(rd_freq*10))   # in MHz
+
+        self.wr_enable_tick = self.LCM_freq // int(wr_freq*10)
+        self.rd_enable_tick = self.LCM_freq // int(rd_freq*10)
+
+        ## report the calculated tick enables only once when initialising
+        print(f"Least Common Multiple Frequency: {self.LCM_freq//10} MHz, Writing Enable Tick: every {self.wr_enable_tick} ticks, Reading Enable Tick: every {self.rd_enable_tick} ticks.")
+
+        ## Initialise the common tick counter
+        self.common_tick_counter = 0
+
+        ## To track the buffer space available in each channel dynamically
+        self.buffer_space_track = [[] for _ in range(self.num_of_channels)]
+
+
+    def run_produce_live(self, data:np.ndarray, time_step:int):
+        """
+        This function will run the data production and compression live for the given time step.
+        Args:
+            data: the 5-pixel row data to be encoded which should be a numpy array of shape (num_of_channels*5,).
+            time_step: Essentially the number of rows of the pixels being processed in the simulation. (This will not be a typical time step used in the previous data line class)
+
+
+        """
+        if data.shape != (self.num_of_channels*5,):
+            raise Exception(f"Data shape is not correct, should be ({self.num_of_channels*5}, ), got {data.shape}")
+
+        ## By default this assumes it is the writing enable tick satisfied so we loop through the channels and push the data into the FIFO buffer
+        for chan in self.channels:
+            chan.produce_and_push(data[chan.id*5:(chan.id+1)*5], time_step)
+
+
+    def run_consume_live(self, time_step:int):
+        """
+        This function will run the data consumption live for the given time step.
+        Args:
+            time_step: Since produce and consume are separated, the time_step here will be the number of data consumption cycles in the simulation.
+
+
+        """
+        ## Run the arbiter to pop the data from the FIFO buffer
+        self.arbiter.step(time_step)
+
+    def update_buffer_space_track(self):
+        """
+        This function will update the buffer space track for each channel regardless of the produce or consume operation.
+        """
+        for i, chan in enumerate(self.channels):
+            self.buffer_space_track[i].append(chan.fifo.space_available())
+
+    def run_single_image(self, img:np.ndarray):
+        """
+        This is the method that will run the full asynchronous data line simulation for a single image.
+        Args:
+            img: the image that needs to be processed, should be a 2D numpy array where each row is a set of pixel values.
+
+        Returns:
+
+        """
+
+        wr_step = 0
+        rd_step = 0
+
+        ## check image shape
+        if img.shape[1] != self.num_of_channels*5:
+            raise Exception(f"Image shape is not correct, should be (N, {self.num_of_channels*5}), got {img.shape}")
+
+        ## increment the common tick counter and run the produce and consume operations based on the enable ticks
+        total_ticks = img.shape[0] * self.wr_enable_tick  # Total ticks that runs out the image writing
+
+        for tick in range(total_ticks):
+            if tick % self.wr_enable_tick == 0 and wr_step < img.shape[0]:
+                ## Writing enable tick satisfied, run the produce operation
+                self.run_produce_live(img[wr_step], wr_step)
+                wr_step += 1
+
+            if tick % self.rd_enable_tick == 0:
+                ## Reading enable tick satisfied, run the consume operation
+                self.run_consume_live(rd_step)
+                rd_step += 1
+
+            ## Update the buffer space track for each channel
+            self.update_buffer_space_track()
+
+
+    def get_used_up_space_track(self):
+        """
+        This function will return the used up space in each channel in an ndarray.
+        Returns:
+
+        """
+        buffer_space_track = np.array(self.buffer_space_track)
+        used_up_space = self.channels[0].fifo.data_depth - buffer_space_track
+        return used_up_space
+
+
+
 
 
 
