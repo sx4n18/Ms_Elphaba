@@ -271,6 +271,121 @@ class RoundRobinSkipEmpty(arbiter):
             print(f"Time: @{time_step} *** All FIFOs are empty, skipping pop operation")
 
 
+class CARRArbiter(arbiter):
+    """
+    Congestion-Aware Round-Robin (CARR) arbiter for your channel/fifo classes.
+
+    Policy:
+      1) Stick to current FIFO if it is non-empty
+      2) Pre-empt to any other FIFO that is almost_full()
+      3) If current served MAX_READS times consecutively, advance RR
+      4) If all FIFOs empty, do nothing and keep current selection
+    """
+
+    def __init__(self, channels: list, max_reads: int = 16):
+        super().__init__(channels)
+        self.max_reads = int(max_reads)
+
+        # Current selection index (sticky pointer) and consecutive read counter
+        self.curr_idx = 0 if self.num_of_channels > 0 else -1
+        self.burst_count = 0
+
+    # ---------- helper predicates ----------
+    def _empty(self, idx: int) -> bool:
+        return self.channels[idx].fifo.is_empty()
+
+    def _almost_full(self, idx: int) -> bool:
+        # In your fifo class, almost_full is a METHOD.
+        return self.channels[idx].fifo.almost_full()
+
+    def _all_empty(self) -> bool:
+        return all(ch.fifo.is_empty() for ch in self.channels)
+
+    def _advance_to_next_non_empty(self):
+        """Advance curr_idx in RR order until a non-empty FIFO is found (or give up if all empty)."""
+        if self._all_empty():
+            return  # keep curr_idx unchanged
+
+        for _ in range(self.num_of_channels):
+            self.curr_idx = (self.curr_idx + 1) % self.num_of_channels
+            if not self._empty(self.curr_idx):
+                return
+
+    def _find_almost_full_other(self):
+        """
+        Find an almost-full FIFO other than current selection.
+        Deterministic choice: scan in RR order starting from curr_idx+1.
+        Returns index or None.
+        """
+        n = self.num_of_channels
+        for k in range(1, n + 1):
+            j = (self.curr_idx + k) % n
+            if j != self.curr_idx and self._almost_full(j) and (not self._empty(j)):
+                return j
+        return None
+
+    # ---------- core selection ----------
+    def select_channel(self):
+        """
+        Returns the selected channel object according to CARR policy.
+        Note: This updates internal state (curr_idx, burst_count resets) as needed.
+        """
+        if self.num_of_channels == 0:
+            raise Exception("No channels connected to arbiter")
+
+        # 0) If all FIFOs empty: hold selection, don't change pointer
+        if self._all_empty():
+            return self.channels[self.curr_idx]
+
+        # 1) Pre-emption: any other FIFO almost full?
+        af_idx = self._find_almost_full_other()
+        if af_idx is not None:
+            self.curr_idx = af_idx
+            self.burst_count = 0
+            return self.channels[self.curr_idx]
+
+        # 2) If current FIFO empty: move to next non-empty
+        if self._empty(self.curr_idx):
+            self._advance_to_next_non_empty()
+            self.burst_count = 0
+            return self.channels[self.curr_idx]
+
+        # 3) Burst limit reached: move on (fairness)
+        if self.burst_count >= self.max_reads:
+            self._advance_to_next_non_empty()
+            self.burst_count = 0
+            return self.channels[self.curr_idx]
+
+        # 4) Otherwise stick to current
+        return self.channels[self.curr_idx]
+
+    def step(self, time_step: int):
+        """
+        One arbiter read opportunity.
+        Pops from the selected FIFO if possible; otherwise idles.
+        Records selected channel id in channel_select on successful pop.
+        """
+        if self.num_of_channels == 0:
+            return
+
+        # If all empty: do nothing and keep current selection
+        if self._all_empty():
+            # Optional: could log idle here
+            return
+
+        sel_channel = self.select_channel()
+
+        if not sel_channel.fifo.is_empty():
+            sel_channel.fifo.pop()
+            self.channel_select.append(sel_channel.id)
+            self.burst_count += 1
+        else:
+            # Can happen if FIFO becomes empty after selection due to other pops in sim
+            print(f"Time: @{time_step} *** FIFO {sel_channel.id} is empty, skipping pop operation")
+            self.burst_count = 0
+
+
+
 class DataLine:
     '''
     This is the DataLine class that encapsulates the whole data line simulation.`
@@ -286,6 +401,10 @@ class DataLine:
             self.arbiter = arbiter(self.channels)
         elif arbiter_name == "urgency":
             self.arbiter = ArbiterUrgency(self.channels)
+        elif arbiter_name == "round_robin_skip":
+            self.arbiter = RoundRobinSkipEmpty(self.channels)
+        elif arbiter_name == "CARR":
+            self.arbiter = CARRArbiter(self.channels, max_reads=16)
         else:
             raise Exception("Arbiter not supported yet")
         
@@ -345,7 +464,7 @@ class AsyncDataline:
 
     '''
 
-    def __init__(self, num_of_channels=8, fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip_empty"):
+    def __init__(self, num_of_channels=8, fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip", **kwargs):
         '''
         This is the constructor for the AsyncDataline class.
         Args:
@@ -365,6 +484,8 @@ class AsyncDataline:
             self.arbiter = ArbiterUrgency(self.channels)
         elif arbiter_name == "round_robin_skip":
             self.arbiter = RoundRobinSkipEmpty(self.channels)
+        elif arbiter_name == "CARR":
+            self.arbiter = CARRArbiter(self.channels, max_reads=kwargs.get("max_reads", 16))
         else:
             raise Exception("Arbiter not supported yet")
 
