@@ -290,6 +290,9 @@ class CARRArbiter(arbiter):
         self.curr_idx = 0 if self.num_of_channels > 0 else -1
         self.burst_count = 0
 
+        # temporarily track the popped word from FIFO, if there are no popped words, it shall be None.
+        self.last_popped_word = None
+
     # ---------- helper predicates ----------
     def _empty(self, idx: int) -> bool:
         return self.channels[idx].fifo.is_empty()
@@ -371,17 +374,19 @@ class CARRArbiter(arbiter):
         # If all empty: do nothing and keep current selection
         if self._all_empty():
             # Optional: could log idle here
+            self.last_popped_word = None
             return
 
         sel_channel = self.select_channel()
 
         if not sel_channel.fifo.is_empty():
-            sel_channel.fifo.pop()
+            self.last_popped_word = sel_channel.fifo.pop()
             self.channel_select.append(sel_channel.id)
             self.burst_count += 1
         else:
             # Can happen if FIFO becomes empty after selection due to other pops in sim
             print(f"Time: @{time_step} *** FIFO {sel_channel.id} is empty, skipping pop operation")
+            self.last_popped_word = None
             self.burst_count = 0
 
 
@@ -464,7 +469,7 @@ class AsyncDataline:
 
     '''
 
-    def __init__(self, num_of_channels=8, fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip", **kwargs):
+    def __init__(self, num_of_channels=8, fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip", write_up=False, **kwargs):
         '''
         This is the constructor for the AsyncDataline class.
         Args:
@@ -506,6 +511,9 @@ class AsyncDataline:
 
         ## To track the buffer space available in each channel dynamically
         self.buffer_space_track = [[] for _ in range(self.num_of_channels)]
+
+        ## Whether to write up the popped words from the arbiter during the simulation, which is useful for later analysis of the data line performance.
+        self.write_up = write_up
 
 
     def run_produce_live(self, data:np.ndarray, time_step:int):
@@ -556,6 +564,11 @@ class AsyncDataline:
         wr_step = 0
         rd_step = 0
 
+        if self.write_up:
+            print("Writing up the popped words from the arbiter during the simulation...")
+            POP_word_file = open(f"DataLine_{self.DL_id}_popped_words.txt", "w")
+            POP_word_file.write("Time Step, Channel ID, Popped Word(Hex), Popped Word(Dec)\n")
+
         ## check image shape
         if img.shape[1] != self.num_of_channels*5:
             raise Exception(f"Image shape is not correct, should be (N, {self.num_of_channels*5}), got {img.shape}")
@@ -573,9 +586,14 @@ class AsyncDataline:
                 ## Reading enable tick satisfied, run the consume operation
                 self.run_consume_live(rd_step)
                 rd_step += 1
+                if self.write_up:
+                    self.write_up_popped_words(POP_word_file, rd_step)
 
             ## Update the buffer space track for each channel
             self.update_buffer_space_track()
+
+        if self.write_up:
+            POP_word_file.close()
 
 
     def get_used_up_space_track(self):
@@ -588,6 +606,16 @@ class AsyncDataline:
         used_up_space = self.channels[0].fifo.data_depth - buffer_space_track
         return used_up_space
 
+
+    def write_up_popped_words(self, pop_file, read_step):
+        """
+        This function will write up the popped words from the arbiter during the simulation. This is useful for later analysis of the data line performance.
+
+        The written information includes the reading time step, the channel ID that the popped word comes from and the popped word itself.
+
+        """
+        if self.arbiter.last_popped_word is not None:
+            pop_file.write(f"{read_step-1}, {self.arbiter.channel_select[-1]}, {hex(self.arbiter.last_popped_word)}, {self.arbiter.last_popped_word}\n")
 
 
 
