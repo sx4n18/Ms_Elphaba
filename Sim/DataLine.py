@@ -1,6 +1,6 @@
 import warnings
 
-from Enc.Row_based_encoder import Row_encoder_5P
+from Enc.Row_based_encoder import Row_encoder_5P, Row_encoder_5P_increment_internal, Row_encoder_5P_1B
 import numpy as np
 import math
 
@@ -53,7 +53,14 @@ class channel:
         self.id = chan_id
         self.fifo = fifo(fifo_depth, fifo_width, id=chan_id)
         if encoder == "Row_encoder_5P":
+            '''Basic 5-pixel row encoder that encodes the data into 2 bytes.'''
             self.encoder = Row_encoder_5P(id=chan_id)
+        elif encoder == "Row_encoder_5P_v2":
+            ## This is the updated Row based encoder that has 2 minor differences: it stops tracking external time; it also only export wraps on silent mode
+            self.encoder = Row_encoder_5P_increment_internal(id=chan_id)
+        elif encoder == "one_bit_mode":
+            ## Purely experimental one bit mode from the encoder point of view, not a simple binarised input data
+            self.encoder = Row_encoder_5P_1B(id=chan_id)
         else:
             raise Exception("Encoder not supported yet")
         self.wr_speed_ratio = wr_speed_ratio  # This is the ratio of the writing speed to the reading speed

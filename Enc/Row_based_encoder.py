@@ -33,7 +33,7 @@ class Row_encoder_5P:
     '''
 
     def __init__(self, id=None):
-        self._repeating_pattern = 0
+        self._repeating_pattern = -1
         self._tok_record = 0 # Recorded timestamp with the same pattern
         self._re_Pete = False
         self.id = id  # Optional ID for the encoder instance, can be used for identification
@@ -347,9 +347,188 @@ class Row_encoder_5P:
         Returns:
             None
         '''
-        self._repeating_pattern = 0
+        self._repeating_pattern = -1
         self._tok_record = 0
         self._re_Pete = False
+
+
+class Row_encoder_5P_1B(Row_encoder_5P):
+    '''
+    This class will encode the pixel data into 16-bit words similarly to Row_encoder_5P, but it will use 1-bit mode to encode the data. The data will be quantised to 1-bit before encoding.
+    It should have the same skeleton to class Row_encoder_5P.
+
+    The encoding still works the same way except the repetition pattern will be collected every 3 cycles and compared to the next 3 cycles pixels.
+
+    The binarisation works as: [7,6,5,4] -> [1], [3,2,1,0] -> [0]
+
+    Timestamp definition is the same as Row_encoder_5P, but it will only be registered at the end of 3 lines of pixels. Therefore, the end user should expect the time to increment by 3.
+
+    This is the 1-bit encoding scheme that still relies on the external time counter to outputs data.
+
+    '''
+
+    def __init__(self, id=id):
+        super().__init__(id=id)
+        self._data_x = np.zeros((3, 5), dtype=np.uint8)
+        self.last_clk = 0
+        self._last_lsb15 = 0 # tracks last-seen truncated timer value while silent
+
+
+    def bin_helper(self, data: np.ndarray) -> np.ndarray:
+        '''
+        This function will binarise the data to 1-bit.
+        The binarisation works as: [7,6,5,4] -> [1], [3,2,1,0] -> [0]
+        Args:
+            data: This should be a 1D numpy array of shape (5,)
+        Returns:
+            binarised_data: This will be a 1D numpy array of shape (5,) with the binarised data.
+        '''
+        if data.shape[0] != 5:
+            raise ValueError("The data should be a 1D numpy array of shape (5,)")
+
+        binarised_data = np.zeros_like(data, dtype=np.uint8)
+        for i in range(5):
+            if data[i] >= 4:
+                binarised_data[i] = 1
+            else:
+                binarised_data[i] = 0
+        return binarised_data
+
+    def three_one_by_5_nd_arr_to_number(self) -> int:
+        '''
+        This function will concatenate 3 ndarray with dimension of (5,) into integer.
+        Since each data is 1-bit, the output will be 15-bit integer.
+
+        :return: 15-bit integer of the final concat words
+        '''
+
+        data1 = self._data_x[0]
+        data2 = self._data_x[1]
+        data3 = self._data_x[2]
+
+        if data1.shape[0] != 5 or data2.shape[0] != 5 or data3.shape[0] != 5:
+            raise ValueError("The data should be a 1D numpy array of shape (5,)")
+
+        # Convert the data to a number, it should be [data1, data2, data3] in order, the element inside each array is 0/1, so it only needs to shift 1 bit
+        number = 0
+        for i in range(5):
+            number = number | int(data3[i]) << i
+        for i in range(5):
+            number = number | int(data2[i]) << (i+5)
+        for i in range(5):
+            number = number | int(data1[i]) << (i+10)
+        return number
+
+
+    def encode_live(self, clock, data: np.ndarray):
+        '''
+        This function will encode the input data based on the clock it arrives.
+        The data will be accumulated for 3 cycles and compared to the previous 3 cycles.
+        If the data matches, it will not be exported. If the data does not match, it will export the timestamp and the data.
+
+        This should be used in a loop where clock and
+
+        :param clock:
+        :param data:
+        :return:
+        '''
+
+
+        ## data sanity check
+        if data.shape[0] != 5:
+            raise ValueError("The data should be a 1D numpy array of shape (5,)")
+
+
+        ## after first 3 cycles, we export straight the encoded data straight away, and save the data as the repeating pattern
+        binarised_data = self.bin_helper(data)
+        self.last_clk = clock
+        index = clock % 3
+        self._data_x[index] = binarised_data
+
+        ## When all 3 cycles have been accumulated, clock == 2/5/8...., we decide if we want to export raw data, or we want to keep silent
+        if index == 2:
+            ## if this is the very first cycle, we simply just export the data
+            if clock == 2:
+                encoded_data = self.three_one_by_5_nd_arr_to_number()
+                self._repeating_pattern = encoded_data
+                self._tok_record = clock
+                self._last_lsb15 = clock & 0x7FFF
+                return  encoded_data
+
+            ## regular other clocks we should first compare the saved pattern and current pattern
+            ## if we are in the repeating state or not
+            elif self._re_Pete:
+                ## if this new pattern is the same as the saved pattern, we do not export data, but we shall check if the clock has wrapped around
+                current_pattern = self.three_one_by_5_nd_arr_to_number()
+                if current_pattern == self._repeating_pattern:
+                    current_lsb15 = clock & 0x7FFF
+                    if current_lsb15 < self._last_lsb15:
+                        # register wrapped since last evaluation
+                        self._last_lsb15 = current_lsb15
+                        return 0x8000
+                    else:
+                        ## timer did not wrap around, we export nothing
+                        self._last_lsb15 = current_lsb15
+                        return None
+                else:
+                    ## if the new pattern is different from the saved pattern, we export the timestamp and the data, set re_pete to false
+                    self._tok_record = clock
+                    self._repeating_pattern = current_pattern
+                    self._re_Pete = False
+                    timestamp_word = (clock & 0x7FFF) | 0x8000  # <-- masked properly now
+                    encoded_data = (timestamp_word, current_pattern)
+                    return encoded_data
+
+            else:
+                ## we are not in the repeating state (actively push data out), check if the new pattern is the same as the saved pattern, if yes, we export nothing and switch to repeating mode
+                ## if no, we simply export the data since we are not in repeating mode
+                current_pattern = self.three_one_by_5_nd_arr_to_number()
+                ## check if the current pattern the same as what we saved
+                if current_pattern == self._repeating_pattern:
+                    ## current pattern is the same as last saved pattern, which means repetition just started, we export nothing and switch to repeating mode
+                    self._re_Pete = True
+                    self._last_lsb15 = clock & 0x7FFF
+                    return None
+                else:
+                    ## current pattern is not the same, we shall keep on exporting raw data
+                    self._tok_record = clock
+                    self._repeating_pattern = current_pattern
+                    encoded_data = current_pattern
+                    return encoded_data
+        else:
+            ## when 3 accumulated data was not there, we export nothing.
+            return None
+
+    def encode_finish(self, finish_clock):
+        '''
+        This is the last finish call for the encoder to export the last data. Regardless of which phase this finishing clock lies, we will export the full time stamp consecutively.
+
+        {1, upper15bit}, {1, mid15bit}, {1, lower15bit}.
+
+        If the encoder is currently in "silent" mode, it shall export nothing after this.
+
+        If the encoder is currently in "rolling" mode, it will export the stored data after this.
+
+        :param finish_clock:
+        :return:
+        '''
+
+        lower15bit = finish_clock & 0x7FFF
+        mid15bit = (finish_clock >> 15) & 0x7FFF
+        upper15bit = (finish_clock >> 30) & 0x7FFF
+
+        if self._re_Pete:
+            ## currently in silent mode, we export nothing after this
+            encoded_data = [(0x8000 | upper15bit), (0x8000 | mid15bit), (0x8000 | lower15bit)]
+        else:
+            ## currently in rolling mode, we export the stored data after this
+            current_pattern = self.three_one_by_5_nd_arr_to_number()
+            encoded_data = [(0x8000 | upper15bit), (0x8000 | mid15bit), (0x8000 | lower15bit), current_pattern]
+
+        self.reset()
+
+        return encoded_data
+
 
 class Row_encoder_10P:
     '''
@@ -720,3 +899,98 @@ class Row_encoder_4P:
                 self.reset()
 
         print("Encoding completed...")
+
+class Row_encoder_5P_increment_internal(Row_encoder_5P):
+    '''
+    This class is the new 5p encoder that does not rely on the external clock to track the timestamp.
+
+    It will keep the current compression scheme, but only increment the "silence" counter by 1 when it is in silence for each data processed and because the data
+    streams out continuously at a fixed rate. This should be valid.
+
+    There are still 3 types of data formats to be exported:
+
+    1. Raw data, this is a 16-bit number in bytes that starts with a leading 0
+        0_data_data_data_data_data ---> each data is 3 bit, 5 data and a leading 0 will make it 16 bits
+
+    2. Timestamp data, this is a 16-bit number in bytes that starts with a leading 1
+        1_Time_stamp ---> 1 is the leading bit, rest 15 bits are the timestamp data
+
+        Time_stamp will be value of the 15-bit internal incremental counter that goes +1 when it is silent and repeating
+
+    3. Special packet, 0x8000, this will be sent when the internal counter wraps around, which is every 2^15 ticks.
+
+    '''
+
+    def __init__(self, id):
+        super().__init__(id=id)
+        self._internal_counter = 0
+
+    def reset(self):
+        self._repeating_pattern = -1
+        self._internal_counter = 0
+        self._re_Pete = False
+
+
+    def encode_live(self, clock, data: np.ndarray):
+
+        ## data sanity check
+        if data.shape[0] != 5:
+            raise ValueError("The data should be a 1D numpy array of shape (5,)")
+
+        ## Convert the input data array into an integer
+        current_pattern = self.one_by_5_nd_array_to_number(data)
+
+        if clock == 0:
+            ## very first clock, we will force the data export anyway
+            self._repeating_pattern = current_pattern
+            return current_pattern
+        elif self._re_Pete:
+            ## the compressor is in silent mode
+            if self._repeating_pattern != current_pattern:
+                ## pattern breaks, we exit silent mode and export the current counter as well
+                timestamp_word = (self._internal_counter & 0x7FFF) | 0x8000
+                self._internal_counter = 0
+                self._repeating_pattern = current_pattern
+                self._re_Pete = False
+                return (timestamp_word, current_pattern)
+            else:
+                ## pattern remains, we stay in silent mode
+                self._internal_counter += 1
+                if self._internal_counter == 0x7FFF:
+                    ## the compressor has stayed in silent mode for 32767 cycles, we will export the special packet and reset the counter
+                    self._internal_counter = 0
+                    return 0x8000
+                else:
+                    ## the internal counter has not exceeded 32767 cycles, we will export nothing and stay in silent mode
+                    return None
+
+        else:
+            ## the compressor is not in silent mode
+            if self._repeating_pattern != current_pattern:
+                ## the pattern is still not repeating, export raw data
+                self._repeating_pattern = current_pattern
+                return current_pattern
+            else:
+                ## the pattern is repeating, export nothing and start incrementing
+                self._re_Pete = True
+                self._internal_counter += 1
+                return None
+
+    def finish_call(self):
+        '''Finish the encoding process and return any remaining data.'''
+
+        if self._re_Pete:
+            ## if the compressor is in silent mode when the finish call was made, we simply dump the incremental count we have
+            timestamp_word = (self._internal_counter & 0x7FFF) | 0x8000
+            encoded_finish = timestamp_word
+        else:
+            ## the compressor is not in silent mode when the finish call was made, there will be no more data to dump
+            encoded_finish = None
+
+        ## call the reset method before finish
+        self.reset()
+
+        return encoded_finish
+
+
+
