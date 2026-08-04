@@ -2,6 +2,7 @@ import struct
 import os
 import numpy as np
 import io
+import warnings
 
 ## This is a class script for the row based encoders, which operate in a simple fashion.
 ## This encoder will be very simple, it will only dump the raw data into a packet when there is no match in the buffer.
@@ -272,9 +273,10 @@ class Row_encoder_5P:
         # First data will be exported as it is and saved as the repeating pattern
         if clock == 0:
             # This is the first loop, the repeating pattern should be 0.
-            if type(self._repeating_pattern) is int and self._repeating_pattern != 0:
+            if type(self._repeating_pattern) is int and self._repeating_pattern != -1:
                 # First loop, but the repeating pattern is not 0, the encoder is not reset.
-                raise ValueError("The repeating pattern is not 0, did you forget to reset the encoder?")
+                # updates to the default reset state, for safety, we chose -1
+                warnings.warn("The repeating pattern is not -1, did you forget to reset the encoder?")
             else:
                 # This is the first loop, the data will be exported as it is and saved as the repeating pattern
                 self._repeating_pattern = data
@@ -367,9 +369,9 @@ class Row_encoder_5P_1B(Row_encoder_5P):
 
     '''
 
-    def __init__(self, id=id):
+    def __init__(self, id=None):
         super().__init__(id=id)
-        self._data_x = np.zeros((3, 5), dtype=np.uint8)
+        self._data_x = np.ones((3, 5), dtype=np.uint8)
         self.last_clk = 0
         self._last_lsb15 = 0 # tracks last-seen truncated timer value while silent
 
@@ -419,6 +421,40 @@ class Row_encoder_5P_1B(Row_encoder_5P):
             number = number | int(data1[i]) << (i+10)
         return number
 
+    def encode_in_mem(self, data: np.ndarray) -> bytes:
+        '''
+        This function will encode the data assuming that the data is sent along with the increment of the timestamp.
+        i.e. the time stamp is incremented by 1 for each data sent.
+
+        Args:
+            data: This should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.
+        '''
+
+        ## Check if the data is in the correct format
+        if data.shape[1] != 5:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.")
+
+        loop_size = data.shape[0]
+        encoded_data = bytearray()
+        for loop in range(loop_size):
+            encoded = self.encode_live(loop, data[loop])
+            if encoded is not None:
+                if type(encoded) is tuple:
+                    for item in encoded:
+                        encoded_data += struct.pack('H', item)
+                else:
+                    encoded_data += struct.pack('H', encoded)
+
+        ## call the finish function to export the last data
+        finish_encoded = self.encode_finish(loop_size)
+        if finish_encoded is not None:
+            #print("Finish encoded data: ", finish_encoded)
+            for item in finish_encoded:
+                encoded_data += struct.pack('H', item)
+
+        return encoded_data
+
+
 
     def encode_live(self, clock, data: np.ndarray):
         '''
@@ -453,6 +489,8 @@ class Row_encoder_5P_1B(Row_encoder_5P):
                 self._repeating_pattern = encoded_data
                 self._tok_record = clock
                 self._last_lsb15 = clock & 0x7FFF
+                ## reset the data_x to prepare for next 3 cycles
+                self._data_x = np.ones((3, 5), dtype=np.uint8)
                 return  encoded_data
 
             ## regular other clocks we should first compare the saved pattern and current pattern
@@ -460,6 +498,10 @@ class Row_encoder_5P_1B(Row_encoder_5P):
             elif self._re_Pete:
                 ## if this new pattern is the same as the saved pattern, we do not export data, but we shall check if the clock has wrapped around
                 current_pattern = self.three_one_by_5_nd_arr_to_number()
+
+                ## reset the data_x to prepare for next 3 cycles
+                self._data_x = np.ones((3, 5), dtype=np.uint8)
+
                 if current_pattern == self._repeating_pattern:
                     current_lsb15 = clock & 0x7FFF
                     if current_lsb15 < self._last_lsb15:
@@ -483,6 +525,10 @@ class Row_encoder_5P_1B(Row_encoder_5P):
                 ## we are not in the repeating state (actively push data out), check if the new pattern is the same as the saved pattern, if yes, we export nothing and switch to repeating mode
                 ## if no, we simply export the data since we are not in repeating mode
                 current_pattern = self.three_one_by_5_nd_arr_to_number()
+
+                ## reset the data_x to prepare for next 3 cycles
+                self._data_x = np.ones((3, 5), dtype=np.uint8)
+
                 ## check if the current pattern the same as what we saved
                 if current_pattern == self._repeating_pattern:
                     ## current pattern is the same as last saved pattern, which means repetition just started, we export nothing and switch to repeating mode
@@ -495,6 +541,9 @@ class Row_encoder_5P_1B(Row_encoder_5P):
                     self._repeating_pattern = current_pattern
                     encoded_data = current_pattern
                     return encoded_data
+
+
+
         else:
             ## when 3 accumulated data was not there, we export nothing.
             return None
@@ -921,7 +970,7 @@ class Row_encoder_5P_increment_internal(Row_encoder_5P):
 
     '''
 
-    def __init__(self, id):
+    def __init__(self, id=None):
         super().__init__(id=id)
         self._internal_counter = 0
 
@@ -981,8 +1030,9 @@ class Row_encoder_5P_increment_internal(Row_encoder_5P):
 
         if self._re_Pete:
             ## if the compressor is in silent mode when the finish call was made, we simply dump the incremental count we have
+            ## plus the repeating pattern we have, which should be the same as the last pattern we have seen
             timestamp_word = (self._internal_counter & 0x7FFF) | 0x8000
-            encoded_finish = timestamp_word
+            encoded_finish = (timestamp_word, self._repeating_pattern)
         else:
             ## the compressor is not in silent mode when the finish call was made, there will be no more data to dump
             encoded_finish = None
@@ -993,4 +1043,211 @@ class Row_encoder_5P_increment_internal(Row_encoder_5P):
         return encoded_finish
 
 
+    def encode_in_mem(self, data: np.ndarray) -> bytes:
+        '''
+        This function will encode the data assuming that the data is sent along with the increment of the timestamp.
+        i.e. the time stamp is incremented by 1 for each data sent.
+
+        Args:
+            data: This should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.
+        '''
+
+        ## Check if the data is in the correct format
+        if data.shape[1] != 5:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.")
+
+        loop_size = data.shape[0]
+        encoded_data = bytearray()
+        for loop in range(loop_size):
+            encoded = self.encode_live(loop, data[loop])
+            if encoded is not None:
+                if type(encoded) is tuple:
+                    for item in encoded:
+                        encoded_data += struct.pack('H', item)
+                else:
+                    encoded_data += struct.pack('H', encoded)
+
+        finish_encoded = self.finish_call()
+        #print("Finish encoded data: ", finish_encoded)
+        if finish_encoded is not None:
+            if type(finish_encoded) is tuple:
+                for item in finish_encoded:
+                    encoded_data += struct.pack('H', item)
+            else:
+                encoded_data += struct.pack('H', finish_encoded)
+
+        return encoded_data
+
+
+class Row_encoder_5P_II_1B(Row_encoder_5P_1B):
+
+    '''
+    This is the new 1-bit 5-pixel encoder that does not rely on the external clock to track the timestamp.
+
+    We shall still follow the 1-bit mode's methods for binarisation and data encapsulation:
+
+    time    data
+    0       data1
+    1       data2
+    2       data3   ---> [data1, data2, data3]   --> pattern (15-bit integer)
+    3       data4
+    4       data5
+    5       data6   ---> [data4, data5, data6]   == pattern ?   -- yes --> silent, increment counter
+                                                                |-- No --> export raw data
+
+
+    But the synchronisation is slightly different:
+    + Evaluation happens every 3 cycles, and the pattern is compared to the last saved pattern.
+    + When the pattern starts repeating, we shall turn on _re_Pete and start incrementing the internal counter, CNT
+    + When the pattern breaks, we shall export the current CNT and the new pattern, and reset CNT to 0. which means 3*CNT*T is the time spent in silence.
+    + When the internal counter reaches 0x7FFF, we shall export a special packet 0x8000 and reset CNT to 0. In a 20 MHz system, this will happen about every 4.9 ms.
+
+    '''
+
+    def __init__(self, id=None):
+        super().__init__(id=id)
+        self._internal_counter = 0
+
+
+    def encode_live(self, clock, data: np.ndarray):
+        '''
+        This function will encode the input data based on the clock it arrives.
+        The data will be accumulated for 3 cycles and compared to the previous 3 cycles.
+        If the data matches, it will not be exported. If the data does not match, it will export the timestamp and the data.
+
+        This should be used in a loop where clock and
+
+        :param clock:
+        :param data:
+        :return:
+        '''
+
+        ## data sanity check
+        if data.shape[0] != 5:
+            raise ValueError("The data should be a 1D numpy array of shape (5,)")
+
+        ## Binarise the data and save it to the _data_x array
+        binarised_data = self.bin_helper(data)
+
+        index = clock % 3
+        self._data_x[index] = binarised_data
+
+        ## When all 3 cycles have been accumulated, clock == 2/5/8...., we decide if we want to export raw data, or we want to keep silent
+        if index == 2:
+            ## if this is the very first cycle, we simply just export the data straight away, and save the data as the repeating pattern
+            if clock == 2:
+                encoded_data = self.three_one_by_5_nd_arr_to_number()
+                self._repeating_pattern = encoded_data
+
+                ## reset the data_x to prepare for next 3 cycles
+                self._data_x = np.ones((3, 5), dtype=np.uint8)
+                return  encoded_data
+
+            ## regular other clocks we should first compare the saved pattern and current pattern
+            ## if we are in the repeating state or not
+            elif self._re_Pete:
+                ## if this new pattern is the same as the saved pattern, we do not export data, but we shall check if the internal counter has wrapped around
+                current_pattern = self.three_one_by_5_nd_arr_to_number()
+
+                ## reset the data_x to prepare for next 3 cycles
+                self._data_x = np.ones((3, 5), dtype=np.uint8)
+
+                if current_pattern == self._repeating_pattern:
+                    self._internal_counter += 1
+                    if self._internal_counter == 0x7FFF:
+                        # register wrapped since last evaluation
+                        self._internal_counter = 0
+                        return 0x8000
+                    else:
+                        ## timer did not wrap around, we export nothing
+                        return None
+                else:
+                    ## if the new pattern is different from the saved pattern, we export the timestamp and the data, set re_pete to false
+                    timestamp_word = (self._internal_counter & 0x7FFF) | 0x8000
+                    self._internal_counter = 0
+                    self._repeating_pattern = current_pattern
+                    self._re_Pete = False
+                    encoded_data = (timestamp_word, current_pattern)
+                    return encoded_data
+
+            ## we are not in the repeating state (actively push data out),
+            ## check if the new pattern is the same as the saved pattern, if yes, we export nothing and switch to repeating mode
+            else:
+                current_pattern = self.three_one_by_5_nd_arr_to_number()
+
+                ## reset the data_x to prepare for next 3 cycles
+                self._data_x = np.ones((3, 5), dtype=np.uint8)
+
+                ## check if the current pattern the same as what we saved
+                if current_pattern == self._repeating_pattern:
+                    ## current pattern is the same as last saved pattern, which means repetition just started, we export nothing and switch to repeating mode
+                    self._re_Pete = True
+                    self._internal_counter += 1
+                    return None
+                else:
+                    ## current pattern is not the same, we shall keep on exporting raw data
+                    self._repeating_pattern = current_pattern
+                    encoded_data = current_pattern
+                    return encoded_data
+        else:
+            ## when 3 accumulated data was not there, we export nothing.
+            return None
+
+
+
+
+    def finish_call(self, clock):
+        '''Finish the encoding process and return any remaining data.'''
+
+        if self._re_Pete:
+            ## if the compressor is in silent mode when the finish call was made, we simply dump the incremental count we have
+            timestamp_word = (self._internal_counter & 0x7FFF) | 0x8000
+            encoded_finish = (timestamp_word, self._repeating_pattern)
+        else:
+            ## the compressor is not in silent mode when the finish call was made
+            ## if the clock is not a multiple of 3, we shall simply export the accumulated data.
+            if clock % 3 != 2:
+                encoded_finish = self.three_one_by_5_nd_arr_to_number()
+            else:
+                encoded_finish = None
+
+        ## call the reset method before finish
+        self.reset()
+
+        return encoded_finish
+
+    def encode_in_mem(self, data: np.ndarray) -> bytes:
+        '''
+        This function will encode the data assuming that the data is sent along with the increment of the timestamp.
+        i.e. the time stamp is incremented by 1 for each data sent.
+
+        Args:
+            data: This should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.
+        '''
+
+        ## Check if the data is in the correct format
+        if data.shape[1] != 5:
+            raise ValueError("The data should be a 2D numpy array of shape (M, 5), where M is the number of rows and 5 is the number of columns.")
+
+        loop_size = data.shape[0]
+        encoded_data = bytearray()
+        for loop in range(loop_size):
+            encoded = self.encode_live(loop, data[loop])
+            if encoded is not None:
+                if type(encoded) is tuple:
+                    for item in encoded:
+                        encoded_data += struct.pack('H', item)
+                else:
+                    encoded_data += struct.pack('H', encoded)
+
+        finish_encoded = self.finish_call()
+        #print("Finish encoded data: ", finish_encoded)
+        if finish_encoded is not None:
+            if type(finish_encoded) is tuple:
+                for item in finish_encoded:
+                    encoded_data += struct.pack('H', item)
+            else:
+                encoded_data += struct.pack('H', finish_encoded)
+
+        return encoded_data
 
