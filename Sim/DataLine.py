@@ -1,6 +1,6 @@
 import warnings
 
-from Enc.Row_based_encoder import Row_encoder_5P, Row_encoder_5P_increment_internal, Row_encoder_5P_1B
+from Enc.Row_based_encoder import Row_encoder_5P, Row_encoder_5P_increment_internal, Row_encoder_5P_1B, Row_encoder_5P_II_1B
 import numpy as np
 import math
 
@@ -61,6 +61,9 @@ class channel:
         elif encoder == "one_bit_mode":
             ## Purely experimental one bit mode from the encoder point of view, not a simple binarised input data
             self.encoder = Row_encoder_5P_1B(id=chan_id)
+        elif encoder == "one_bit_mode_v2":
+            ## One bit mode with internal increment counter
+            self.encoder = Row_encoder_5P_II_1B(id=chan_id)
         else:
             raise Exception("Encoder not supported yet")
         self.wr_speed_ratio = wr_speed_ratio  # This is the ratio of the writing speed to the reading speed
@@ -476,19 +479,22 @@ class AsyncDataline:
 
     '''
 
-    def __init__(self, num_of_channels=8, fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip", write_up=False, **kwargs):
+    def __init__(self, num_of_channels=8, encoder_type="Row_encoder_5P", fifo_depth=256, fifo_width=16, DL_id=0, wr_freq=20, rd_freq=37.5, arbiter_name="round_robin_skip", write_up=False, **kwargs):
         '''
         This is the constructor for the AsyncDataline class.
         Args:
             num_of_channels: Simply the number of channels in the data line. By default, it is 8
+            encoder_type: type of encoders we use to configure the channel
+                available options: "Row_encoder_5P", "Row_encoder_5P_v2", "one_bit_mode", "one_bit_mode_v2"
+                which corresponds to: old 5P encoder, 5P encoder with internal incremental counter, one-bit mode classic, and one bit mode with internal incremental counter
             fifo_depth: FIFO depth for each channel
             fifo_width: The word length for each FIFO entry
             DL_id: Simply the ID for the data line, useful when there are multiple data lines in the simulation
             wr_freq: The writing frequency in MHz, the smallest resolution is 0.1 MHz
             rd_freq: The reading frequency in MHz the smallest resolution is 0.1 MHz
-            arbiter_name: the type of arbiter to use, by default it is "round_robin_skip", available options are "round_robin" and "urgency"
+            arbiter_name: the type of arbiter to use, by default it is "round_robin_skip", available options are "round_robin" and "urgency" and "CARR"
         '''
-        self.channels = [channel(chan_id=i, fifo_depth=fifo_depth, fifo_width=fifo_width) for i in range(num_of_channels)]
+        self.channels = [channel(encoder=encoder_type, chan_id=i, fifo_depth=fifo_depth, fifo_width=fifo_width) for i in range(num_of_channels)]
         self.num_of_channels = num_of_channels
         if arbiter_name == "round_robin":
             self.arbiter = arbiter(self.channels)
