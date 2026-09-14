@@ -25,7 +25,20 @@ class SEQGEN:
         print("Bits per data line:", self.bits_per_data_line)
         print("Pixels per data line:", self.n_pixels_per_data_line)
 
-    def generate_pixel_data(self, export_file_path, img_file_path=None, img_array=None, img_start_col=0):
+    def convert_to_gray_code(self, img_array):
+        """
+        This method will convert the pixel values in the image array to Gray code.
+        It will take in a 2D numpy array of pixel values and return a 2D numpy array of Gray code values.
+        """
+        # Ensure the input is a numpy array
+        img_array = np.array(img_array, dtype=np.uint8)
+
+        # Convert to Gray code using bitwise operations
+        gray_array = img_array ^ (img_array >> 1)
+
+        return gray_array
+
+    def generate_pixel_data(self, export_file_path, img_file_path=None, img_array=None, img_start_col=0, gray_code=True):
         """
        This method will generate a simple memory file that contains the pixel data for the simulation.
 
@@ -48,7 +61,9 @@ class SEQGEN:
         else:
             img_arr = img_array
 
-
+        ## convert the elements in the image array to Gray code, based on the option
+        if gray_code:
+            img_arr = self.convert_to_gray_code(img_arr)
 
         ## check if export file path is valid, if not make the directory
         export_dir = os.path.dirname(export_file_path)
